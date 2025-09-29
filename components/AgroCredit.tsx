@@ -7,7 +7,8 @@ import React, { useState } from "react";
  * - Zonas: Núcleo, NEA
  * - Precios globales: Soja 320±15, Maíz 172.5±8.5 (USD/t)
  * - Base de crédito = Capital de trabajo (inputs+labores+arrendamiento*)
- * - Muestra: Insumos, Cap. Trabajo, Costo Total; Insights narrados y rango recomendado.
+ * - Muestra: Insumos, Cap. Trabajo, Costo Total; Insights narrados, rango recomendado
+ * - Semáforo por nivel de crédito: Verde (≥85%), Amarillo (≥75%), Rojo (<60%)
  */
 
 const N = 100_000;
@@ -15,6 +16,8 @@ const GRID_STEPS = 21;
 const RHO_SOY = -0.05;
 const RHO_CORN = -0.05;
 const TARGET_PROB = 0.85 as const;
+const YELLOW_PROB = 0.75;
+const RED_PROB = 0.60;
 
 const ZONAL = [
   { zone: "Núcleo", crop: "soy",  yield_mean_qq: 40.0, yield_sd_qq: 5.0,  cost_total_mean: 1027.6, cost_total_sd: 120.0, cost_inputs_mean: 234.3, cost_inputs_sd: 50.0,  cost_labors_mean: 53.9,  cost_labors_sd: 15.0, cost_rent_mean: 520.1, cost_rent_sd: 70.0 },
@@ -53,6 +56,31 @@ function sampleNormal(mean: number, sd: number, z: number) {
   const x = mean + sd * z; return x < 0 ? 0 : x;
 }
 function fmtMoney(x: number){ return Math.round(x).toLocaleString(); }
+function pct(n: number){ return `${Math.round(n*100)}%`; }
+
+type TableRow = { pct:number; credit_usd:number; prob_repay:number };
+type Segment = { idxMin:number; idxMax:number; pctMin:number; pctMax:number; amtMin:number; amtMax:number };
+
+function contiguousSegments(rows: TableRow[], predicate: (p:number)=>boolean, wcBase:number): Segment[] {
+  const segs: Segment[] = [];
+  let start = -1;
+  for (let i=0; i<rows.length; i++){
+    const ok = predicate(rows[i].prob_repay);
+    if (ok && start === -1) start = i;
+    if ((!ok || i === rows.length-1) && start !== -1){
+      const end = ok && i === rows.length-1 ? i : i-1;
+      const pctMin = rows[start].pct, pctMax = rows[end].pct;
+      segs.push({
+        idxMin:start, idxMax:end,
+        pctMin, pctMax,
+        amtMin: wcBase * pctMin,
+        amtMax: wcBase * pctMax
+      });
+      start = -1;
+    }
+  }
+  return segs;
+}
 
 export default function AgroCredit(){
   const [zone, setZone] = useState<Zone>("Núcleo");
@@ -75,7 +103,7 @@ export default function AgroCredit(){
     const { z1: zSoyY, z2: zSoyP } = corrNormals(N, RHO_SOY);
     const { z1: zCornY, z2: zCornP } = corrNormals(N, RHO_CORN);
 
-    // Soy
+    // SOJA
     const soyYieldQq = new Float64Array(N), soyPrice = new Float64Array(N);
     const soyCostInputs = new Float64Array(N), soyCostLabors = new Float64Array(N), soyCostRent = new Float64Array(N);
     for (let i = 0; i < N; i++) {
@@ -88,7 +116,7 @@ export default function AgroCredit(){
     const soyYieldTon = Array.from(soyYieldQq, v => v / 10);
     const soyRevenuePerHa = new Float64Array(N); for (let i = 0; i < N; i++) soyRevenuePerHa[i] = soyYieldTon[i] * soyPrice[i];
 
-    // Corn
+    // MAÍZ
     const cornYieldQq = new Float64Array(N), cornPrice = new Float64Array(N);
     const cornCostInputs = new Float64Array(N), cornCostLabors = new Float64Array(N), cornCostRent = new Float64Array(N);
     for (let i = 0; i < N; i++) {
@@ -101,32 +129,32 @@ export default function AgroCredit(){
     const cornYieldTon = Array.from(cornYieldQq, v => v / 10);
     const cornRevenuePerHa = new Float64Array(N); for (let i = 0; i < N; i++) cornRevenuePerHa[i] = cornYieldTon[i] * cornPrice[i];
 
-    // Costs per ha (Working capital components)
+    // Costos por ha (CT: inputs+labores+(rent?))
     const soyCostPerHa = new Float64Array(N), cornCostPerHa = new Float64Array(N);
     for (let i = 0; i < N; i++) {
       soyCostPerHa[i]  = soyCostInputs[i]  + soyCostLabors[i]  + soyCostRent[i];
       cornCostPerHa[i] = cornCostInputs[i] + cornCostLabors[i] + cornCostRent[i];
     }
 
-    // Margins per ha
+    // Márgenes por ha
     const soyMarginPerHa = new Float64Array(N), cornMarginPerHa = new Float64Array(N);
     for (let i = 0; i < N; i++) {
       soyMarginPerHa[i]  = soyRevenuePerHa[i]  - soyCostPerHa[i];
       cornMarginPerHa[i] = cornRevenuePerHa[i] - cornCostPerHa[i];
     }
 
-    // Totals per simulation
+    // Totales por simulación
     const totalMargin = new Float64Array(N);
     for (let i = 0; i < N; i++) totalMargin[i] = soyMarginPerHa[i]*haSoy + cornMarginPerHa[i]*haCorn;
 
-    // Needs (deterministic by means)
+    // Necesidades (determinísticas por medias)
     const needInputsUSD = haSoy*zs.cost_inputs_mean + haCorn*zc.cost_inputs_mean;
     const wcSoy  = zs.cost_inputs_mean + zs.cost_labors_mean + (hasRent? zs.cost_rent_mean : 0);
     const wcCorn = zc.cost_inputs_mean + zc.cost_labors_mean + (hasRent? zc.cost_rent_mean : 0);
-    const needWorkingCapUSD = haSoy*wcSoy + haCorn*wcCorn; // base for credit
+    const needWorkingCapUSD = haSoy*wcSoy + haCorn*wcCorn; // BASE de crédito
     const costTotalUSD = haSoy*zs.cost_total_mean + haCorn*zc.cost_total_mean;
 
-    // Credit grid (0..100% of working cap)
+    // Grilla de crédito (0..100% de capital de trabajo)
     const creditGridPct: number[] = [], creditGridAmt: number[] = [], repayProb: number[] = [];
     for (let s = 0; s < GRID_STEPS; s++) {
       const pct = s/(GRID_STEPS-1);
@@ -135,8 +163,8 @@ export default function AgroCredit(){
       creditGridPct.push(pct); creditGridAmt.push(creditAmt); repayProb.push(repay/N);
     }
 
-    // Recommendation
-    let bestStart=-1,bestEnd=-1,curStart=-1; 
+    // Rango recomendado (tramo continuo con prob ≥ objetivo)
+    let bestStart=-1,bestEnd=-1,curStart=-1;
     for(let i=0;i<repayProb.length;i++){
       if(repayProb[i]>=TARGET_PROB){ if(curStart===-1) curStart=i; }
       else if(curStart!==-1){ if(bestStart===-1 || (i-1-curStart)>(bestEnd-bestStart)){ bestStart=curStart; bestEnd=i-1; } curStart=-1; }
@@ -151,7 +179,13 @@ export default function AgroCredit(){
       maxCreditAmt: maxIdx>=0? creditGridAmt[maxIdx] : null,
     };
 
-    // Insights
+    // Semáforo por segmentos de crédito
+    const rows: TableRow[] = creditGridAmt.map((amt,i)=>({pct:creditGridPct[i], credit_usd:amt, prob_repay:repayProb[i]}));
+    const greenSegs  = contiguousSegments(rows, p => p >= TARGET_PROB,        needWorkingCapUSD);
+    const yellowSegs = contiguousSegments(rows, p => p >= YELLOW_PROB && p < TARGET_PROB, needWorkingCapUSD);
+    const redSegs    = contiguousSegments(rows, p => p < RED_PROB,            needWorkingCapUSD);
+
+    // Insights (escenarios)
     const sorted = Array.from(totalMargin).sort((a,b)=>a-b);
     const q=(p:number)=> sorted[Math.min(sorted.length-1, Math.max(0, Math.floor(p*(sorted.length-1))))];
     const bad=q(0.05), typical=q(0.5), good=q(0.95);
@@ -160,7 +194,8 @@ export default function AgroCredit(){
     setOut({
       zone, haSoy, haCorn, hasRent,
       needInputsUSD, needWorkingCapUSD, costTotalUSD,
-      recommendation, table: creditGridAmt.map((amt,i)=>({pct:creditGridPct[i], credit_usd:amt, prob_repay:repayProb[i]})),
+      recommendation,
+      semaforo: { greenSegs, yellowSegs, redSegs },
       insights: { bad, typical, good, prob_pos },
     });
     setIsRunning(false);
@@ -214,7 +249,7 @@ export default function AgroCredit(){
         </div>
 
         <div className="p-5 bg-white rounded-2xl shadow-sm border">
-          <h2 className="font-medium mb-3">Cómo podría ir la campaña (márgenes)</h2>
+          <h2 className="font-medium mb-3">Cómo podría ir la campaña</h2>
           {out ? (
             <div className="space-y-2 text-sm">
               <p><b>Año complicado:</b> ~<b>$ {fmtMoney(out.insights.bad)}</b>.</p>
@@ -234,10 +269,10 @@ export default function AgroCredit(){
             {out.recommendation ? (
               <div className="text-sm space-y-1">
                 <p>Prob. objetivo ≥ <b>{Math.round(TARGET_PROB*100)}%</b></p>
-                <p>Rango recomendado: <b>{Math.round(out.recommendation.pctMin*100)}% – {Math.round(out.recommendation.pctMax*100)}%</b> de capital de trabajo</p>
+                <p>Rango recomendado: <b>{pct(out.recommendation.pctMin)} – {pct(out.recommendation.pctMax)}</b> de capital de trabajo</p>
                 <p>Equivalente a: <b>$ {fmtMoney(out.recommendation.amtMin)} – $ {fmtMoney(out.recommendation.amtMax)}</b></p>
                 {out.recommendation.maxCreditAmt !== null && (
-                  <p>Crédito máximo que cumple objetivo: <b>$ {fmtMoney(out.recommendation.maxCreditAmt)}</b> ({Math.round(out.recommendation.maxCreditPct*100)}%)</p>
+                  <p className="text-base"><b>Crédito máximo que cumple objetivo: $ {fmtMoney(out.recommendation.maxCreditAmt)}</b></p>
                 )}
               </div>
             ) : (
@@ -246,8 +281,28 @@ export default function AgroCredit(){
           </div>
 
           <div className="p-5 bg-white rounded-2xl shadow-sm border">
-            <h3 className="font-medium mb-3">Probabilidad de repago vs crédito</h3>
-            <ProbChart rows={out.table} />
+            <h3 className="font-medium mb-3">Semáforo por nivel de crédito</h3>
+
+            {/* Verde ≥85% */}
+            <TrafficBlock
+              title="Verde (≥85% de prob. repago)"
+              colorClass="bg-emerald-500/15 text-emerald-800 border-emerald-200"
+              segments={out.semaforo.greenSegs}
+            />
+
+            {/* Amarillo ≥75% y <85% */}
+            <TrafficBlock
+              title="Amarillo (≥75% y <85%)"
+              colorClass="bg-amber-500/15 text-amber-800 border-amber-200"
+              segments={out.semaforo.yellowSegs}
+            />
+
+            {/* Rojo <60% */}
+            <TrafficBlock
+              title="Rojo (<60%)"
+              colorClass="bg-rose-500/15 text-rose-800 border-rose-200"
+              segments={out.semaforo.redSegs}
+            />
           </div>
         </section>
       )}
@@ -264,25 +319,27 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function ProbChart({ rows }: { rows: { pct:number; credit_usd:number; prob_repay:number }[] }){
-  const w=560, h=160, p=18;
-  const xs = rows.map(r=>r.credit_usd);
-  const xmin=0, xmax=Math.max(...xs,1), ymin=0, ymax=1;
-  const X=(x:number)=> p+(x-xmin)/(xmax-xmin||1)*(w-2*p);
-  const Y=(y:number)=> h-p-(y-ymin)/(ymax-ymin||1)*(h-2*p);
-  const pts = rows.map(r=>`${X(r.credit_usd)},${Y(r.prob_repay)}`).join(" ");
+function TrafficBlock({
+  title, colorClass, segments
+}: {
+  title: string;
+  colorClass: string;
+  segments: Segment[];
+}){
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto">
-      <defs>
-        <linearGradient id="g" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#34d399" stopOpacity=".15"/>
-          <stop offset="100%" stopColor="#0ea5e9" stopOpacity=".05"/>
-        </linearGradient>
-      </defs>
-      <rect x={0} y={0} width={w} height={h} rx={16} fill="url(#g)" />
-      <line x1={p} y1={h-p} x2={w-p} y2={h-p} stroke="#cbd5e1" />
-      <line x1={p} y1={p}   x2={p}   y2={h-p} stroke="#cbd5e1" />
-      <polyline fill="none" stroke="#0ea5e9" strokeWidth={2.5} points={pts} />
-    </svg>
+    <div className={`mt-3 rounded-xl border p-3 ${colorClass}`}>
+      <div className="text-sm font-medium mb-2">{title}</div>
+      {segments.length ? (
+        <div className="flex flex-wrap gap-2">
+          {segments.map((s, i) => (
+            <span key={i} className="inline-flex items-center gap-1 rounded-full bg-white/50 px-3 py-1 text-xs border">
+              {pct(s.pctMin)}–{pct(s.pctMax)} · $ {fmtMoney(s.amtMin)}–$ {fmtMoney(s.amtMax)}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs opacity-70">Sin niveles en este rango.</div>
+      )}
+    </div>
   );
 }
