@@ -214,7 +214,7 @@ export default function AgroCredit(){
         </div>
 
         <div className="p-5 bg-white rounded-2xl shadow-sm border">
-          <h2 className="font-medium mb-3">Cómo podría ir la campaña</h2>
+          <h2 className="font-medium mb-3">Cómo podría ir la campaña (márgenes)</h2>
           {out ? (
             <div className="space-y-2 text-sm">
               <p><b>Año complicado:</b> ~<b>$ {fmtMoney(out.insights.bad)}</b>.</p>
