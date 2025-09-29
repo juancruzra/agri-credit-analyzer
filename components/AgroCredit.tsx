@@ -245,7 +245,7 @@ export default function AgroCredit(){
             </div>
             <label className="inline-flex items-center gap-2 mt-1">
               <input type="checkbox" checked={hasRent} onChange={e=>setHasRent(e.target.checked)} />
-              <span>Arrendamiento (SI/NO)</span>
+              <span>Arrendamiento</span>
             </label>
             <button onClick={run} disabled={isRunning} className="mt-3 w-full px-4 py-2 rounded-2xl bg-slate-900 text-white hover:opacity-90 disabled:opacity-50">{isRunning? "Corriendo…" : "Correr simulación"}</button>
           </div>
