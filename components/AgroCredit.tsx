@@ -7,8 +7,10 @@ import React, { useState } from "react";
  * - Zonas: Núcleo, NEA
  * - Precios globales: Soja 320±15, Maíz 172.5±8.5 (USD/t)
  * - Base de crédito = Capital de trabajo (inputs+labores+arrendamiento*)
- * - Muestra: Insumos, Cap. Trabajo, Costo Total; Insights narrados, rango recomendado
- * - Semáforo por nivel de crédito: Verde (≥85%), Amarillo (≥75%), Rojo (<60%)
+ * - Semáforo por nivel de crédito:
+ *    Verde ≥85% (prob. repago)
+ *    Amarillo entre fin del verde y comienzo del rojo (≥60% y <85%)
+ *    Rojo <60%
  */
 
 const N = 100_000;
@@ -16,12 +18,12 @@ const GRID_STEPS = 21;
 const RHO_SOY = -0.05;
 const RHO_CORN = -0.05;
 const TARGET_PROB = 0.85 as const;
-const YELLOW_PROB = 0.75;
-const RED_PROB = 0.60;
+const YELLOW_PROB = 0.60; // límite inferior amarillo
+const RED_PROB = 0.60;    // rojo es <60%
 
 const ZONAL = [
   { zone: "Núcleo", crop: "soy",  yield_mean_qq: 40.0, yield_sd_qq: 5.0,  cost_total_mean: 1027.6, cost_total_sd: 120.0, cost_inputs_mean: 234.3, cost_inputs_sd: 50.0,  cost_labors_mean: 53.9,  cost_labors_sd: 15.0, cost_rent_mean: 520.1, cost_rent_sd: 70.0 },
-  { zone: "Núcleo", crop: "corn", yield_mean_qq: 100.0, yield_sd_qq: 6.0,  cost_total_mean: 1491.0, cost_total_sd: 150.0, cost_inputs_mean: 470.9, cost_inputs_sd: 94.0,  cost_labors_mean: 53.9,  cost_labors_sd: 15.0, cost_rent_mean: 520.1, cost_rent_sd: 70.0 },
+  { zone: "Núcleo", crop: "corn", yield_mean_qq: 10.0, yield_sd_qq: 6.0,  cost_total_mean: 1491.0, cost_total_sd: 150.0, cost_inputs_mean: 470.9, cost_inputs_sd: 94.0,  cost_labors_mean: 53.9,  cost_labors_sd: 15.0, cost_rent_mean: 520.1, cost_rent_sd: 70.0 },
   { zone: "NEA",    crop: "soy",  yield_mean_qq: 26.0, yield_sd_qq: 3.0,  cost_total_mean:  584.8, cost_total_sd:  58.0, cost_inputs_mean: 277.1, cost_inputs_sd: 30.0,  cost_labors_mean: 85.1,  cost_labors_sd: 10.0, cost_rent_mean: 133.7, cost_rent_sd: 30.0 },
   { zone: "NEA",    crop: "corn", yield_mean_qq: 59.0, yield_sd_qq: 2.5,  cost_total_mean: 1071.3, cost_total_sd: 100.0, cost_inputs_mean: 442.1, cost_inputs_sd: 44.0,  cost_labors_mean: 76.1,  cost_labors_sd:  9.0, cost_rent_mean: 133.7, cost_rent_sd: 30.0 },
 ] as const;
@@ -59,28 +61,6 @@ function fmtMoney(x: number){ return Math.round(x).toLocaleString(); }
 function pct(n: number){ return `${Math.round(n*100)}%`; }
 
 type TableRow = { pct:number; credit_usd:number; prob_repay:number };
-type Segment = { idxMin:number; idxMax:number; pctMin:number; pctMax:number; amtMin:number; amtMax:number };
-
-function contiguousSegments(rows: TableRow[], predicate: (p:number)=>boolean, wcBase:number): Segment[] {
-  const segs: Segment[] = [];
-  let start = -1;
-  for (let i=0; i<rows.length; i++){
-    const ok = predicate(rows[i].prob_repay);
-    if (ok && start === -1) start = i;
-    if ((!ok || i === rows.length-1) && start !== -1){
-      const end = ok && i === rows.length-1 ? i : i-1;
-      const pctMin = rows[start].pct, pctMax = rows[end].pct;
-      segs.push({
-        idxMin:start, idxMax:end,
-        pctMin, pctMax,
-        amtMin: wcBase * pctMin,
-        amtMax: wcBase * pctMax
-      });
-      start = -1;
-    }
-  }
-  return segs;
-}
 
 export default function AgroCredit(){
   const [zone, setZone] = useState<Zone>("Núcleo");
@@ -163,6 +143,12 @@ export default function AgroCredit(){
       creditGridPct.push(pct); creditGridAmt.push(creditAmt); repayProb.push(repay/N);
     }
 
+    // Índices clave: fin del verde (último ≥85%) e inicio del rojo (primero <60%)
+    const lastGreenIdx = (() => {
+      let idx = -1; for (let i=0;i<repayProb.length;i++) if (repayProb[i] >= TARGET_PROB) idx = i; return idx;
+    })();
+    const firstRedIdx = repayProb.findIndex(p => p < RED_PROB); // -1 si no hay rojo
+
     // Rango recomendado (tramo continuo con prob ≥ objetivo)
     let bestStart=-1,bestEnd=-1,curStart=-1;
     for(let i=0;i<repayProb.length;i++){
@@ -170,20 +156,44 @@ export default function AgroCredit(){
       else if(curStart!==-1){ if(bestStart===-1 || (i-1-curStart)>(bestEnd-bestStart)){ bestStart=curStart; bestEnd=i-1; } curStart=-1; }
     }
     if(curStart!==-1){ if(bestStart===-1 || (repayProb.length-1-curStart)>(bestEnd-bestStart)){ bestStart=curStart; bestEnd=repayProb.length-1; } }
-    let maxIdx=-1; for(let i=0;i<repayProb.length;i++) if(repayProb[i] >= TARGET_PROB) maxIdx=i;
-
     const recommendation = (bestStart===-1)? null : {
-      pctMin: creditGridPct[bestStart], pctMax: creditGridPct[bestEnd],
-      amtMin: creditGridAmt[bestStart], amtMax: creditGridAmt[bestEnd],
-      maxCreditPct: maxIdx>=0? creditGridPct[maxIdx] : null,
-      maxCreditAmt: maxIdx>=0? creditGridAmt[maxIdx] : null,
+      pctMin: creditGridPct[bestStart],
+      pctMax: creditGridPct[bestEnd],
+      amtMin: creditGridAmt[bestStart],
+      amtMax: creditGridAmt[bestEnd],
+      maxCreditPct: creditGridPct[bestEnd],
+      maxCreditAmt: creditGridAmt[bestEnd],
     };
 
-    // Semáforo por segmentos de crédito
-    const rows: TableRow[] = creditGridAmt.map((amt,i)=>({pct:creditGridPct[i], credit_usd:amt, prob_repay:repayProb[i]}));
-    const greenSegs  = contiguousSegments(rows, p => p >= TARGET_PROB,        needWorkingCapUSD);
-    const yellowSegs = contiguousSegments(rows, p => p >= YELLOW_PROB && p < TARGET_PROB, needWorkingCapUSD);
-    const redSegs    = contiguousSegments(rows, p => p < RED_PROB,            needWorkingCapUSD);
+    // RANGO AMARILLO como único rango entre fin del verde y comienzo del rojo
+    // Amarillo = créditos con 60% ≤ prob < 85%, y además:
+    //  - pct inicia justo después del fin del verde
+    //  - pct termina justo antes del comienzo del rojo (o en el final si no hay rojo)
+    let yellowStartIdx = Math.min(repayProb.length-1, (lastGreenIdx === -1 ? 0 : lastGreenIdx + 1));
+    let yellowEndIdx = (firstRedIdx === -1 ? repayProb.length-1 : Math.max(0, firstRedIdx - 1));
+
+    // Ajuste por límites de probabilidad (≥60% y <85%)
+    while (yellowStartIdx <= yellowEndIdx && (repayProb[yellowStartIdx] < YELLOW_PROB || repayProb[yellowStartIdx] >= TARGET_PROB)) yellowStartIdx++;
+    while (yellowEndIdx >= yellowStartIdx && (repayProb[yellowEndIdx] < YELLOW_PROB || repayProb[yellowEndIdx] >= TARGET_PROB)) yellowEndIdx--;
+
+    const yellowRange = (yellowStartIdx <= yellowEndIdx)
+      ? {
+          pctMin: creditGridPct[yellowStartIdx],
+          pctMax: creditGridPct[yellowEndIdx],
+          amtMin: creditGridAmt[yellowStartIdx],
+          amtMax: creditGridAmt[yellowEndIdx],
+        }
+      : null;
+
+    // RANGO ROJO (desde el primer índice rojo hasta el final)
+    const redRange = (firstRedIdx !== -1)
+      ? {
+          pctMin: creditGridPct[firstRedIdx],
+          pctMax: creditGridPct[creditGridPct.length-1],
+          amtMin: creditGridAmt[firstRedIdx],
+          amtMax: creditGridAmt[creditGridAmt.length-1],
+        }
+      : null;
 
     // Insights (escenarios)
     const sorted = Array.from(totalMargin).sort((a,b)=>a-b);
@@ -195,7 +205,14 @@ export default function AgroCredit(){
       zone, haSoy, haCorn, hasRent,
       needInputsUSD, needWorkingCapUSD, costTotalUSD,
       recommendation,
-      semaforo: { greenSegs, yellowSegs, redSegs },
+      semaforo: {
+        green: recommendation ? {
+          pctMin: recommendation.pctMin, pctMax: recommendation.pctMax,
+          amtMin: recommendation.amtMin, amtMax: recommendation.amtMax
+        } : null,
+        yellow: yellowRange,
+        red: redRange
+      },
       insights: { bad, typical, good, prob_pos },
     });
     setIsRunning(false);
@@ -205,7 +222,7 @@ export default function AgroCredit(){
     <div className="max-w-6xl mx-auto px-6 py-8">
       <header className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl md:text-3xl font-semibold">Agro Credit Optimizer — Demo</h1>
-        <div className="text-xs text-slate-500">Powered by Sembrala</div>
+        <div className="text-xs text-slate-500">Desarrollado por Sembrala</div>
       </header>
 
       <section className="grid lg:grid-cols-3 gap-4">
@@ -283,25 +300,25 @@ export default function AgroCredit(){
           <div className="p-5 bg-white rounded-2xl shadow-sm border">
             <h3 className="font-medium mb-3">Semáforo por nivel de crédito</h3>
 
-            {/* Verde ≥85% */}
-            <TrafficBlock
-              title="Verde (≥85% de prob. repago)"
-              colorClass="bg-emerald-500/15 text-emerald-800 border-emerald-200"
-              segments={out.semaforo.greenSegs}
+            {/* VERDE (rango que cumple ≥85%) */}
+            <TrafficCard
+              title="Verde (≥85% prob. repago)"
+              color="emerald"
+              range={out.semaforo.green}
             />
 
-            {/* Amarillo ≥75% y <85% */}
-            <TrafficBlock
-              title="Amarillo (≥75% y <85%)"
-              colorClass="bg-amber-500/15 text-amber-800 border-amber-200"
-              segments={out.semaforo.yellowSegs}
+            {/* AMARILLO (un solo rango entre fin del verde y comienzo del rojo) */}
+            <TrafficCard
+              title="Amarillo (≥60% y <85%)"
+              color="amber"
+              range={out.semaforo.yellow}
             />
 
-            {/* Rojo <60% */}
-            <TrafficBlock
+            {/* ROJO (desde el primer rojo hasta el 100%) */}
+            <TrafficCard
               title="Rojo (<60%)"
-              colorClass="bg-rose-500/15 text-rose-800 border-rose-200"
-              segments={out.semaforo.redSegs}
+              color="rose"
+              range={out.semaforo.red}
             />
           </div>
         </section>
@@ -319,24 +336,26 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function TrafficBlock({
-  title, colorClass, segments
+function TrafficCard({
+  title, color, range
 }: {
   title: string;
-  colorClass: string;
-  segments: Segment[];
+  color: "emerald" | "amber" | "rose";
+  range: { pctMin:number; pctMax:number; amtMin:number; amtMax:number } | null;
 }){
+  const colorMap = {
+    emerald: { bg:"bg-emerald-500/15", text:"text-emerald-800", border:"border-emerald-200", chip:"bg-emerald-50 border-emerald-200" },
+    amber:   { bg:"bg-amber-500/15",   text:"text-amber-800",   border:"border-amber-200",   chip:"bg-amber-50 border-amber-200" },
+    rose:    { bg:"bg-rose-500/15",    text:"text-rose-800",    border:"border-rose-200",    chip:"bg-rose-50 border-rose-200" },
+  }[color];
+
   return (
-    <div className={`mt-3 rounded-xl border p-3 ${colorClass}`}>
+    <div className={`mt-3 rounded-xl border p-3 ${colorMap.bg} ${colorMap.text} ${colorMap.border}`}>
       <div className="text-sm font-medium mb-2">{title}</div>
-      {segments.length ? (
-        <div className="flex flex-wrap gap-2">
-          {segments.map((s, i) => (
-            <span key={i} className="inline-flex items-center gap-1 rounded-full bg-white/50 px-3 py-1 text-xs border">
-              {pct(s.pctMin)}–{pct(s.pctMax)} · $ {fmtMoney(s.amtMin)}–$ {fmtMoney(s.amtMax)}
-            </span>
-          ))}
-        </div>
+      {range ? (
+        <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs border ${colorMap.chip}`}>
+          {pct(range.pctMin)}–{pct(range.pctMax)} · $ {fmtMoney(range.amtMin)}–$ {fmtMoney(range.amtMax)}
+        </span>
       ) : (
         <div className="text-xs opacity-70">Sin niveles en este rango.</div>
       )}
