@@ -237,4 +237,52 @@ export default function AgroCredit(){
                 <p>Rango recomendado: <b>{Math.round(out.recommendation.pctMin*100)}% – {Math.round(out.recommendation.pctMax*100)}%</b> de capital de trabajo</p>
                 <p>Equivalente a: <b>$ {fmtMoney(out.recommendation.amtMin)} – $ {fmtMoney(out.recommendation.amtMax)}</b></p>
                 {out.recommendation.maxCreditAmt !== null && (
-                  <p>Crédito máximo que cumple objetivo: <b>$ {fmtMoney(out.recommendation.maxCreditAmt)}</b> ({Math.round(out.recommendation.maxCreditPct*100)}%)</p
+                  <p>Crédito máximo que cumple objetivo: <b>$ {fmtMoney(out.recommendation.maxCreditAmt)}</b> ({Math.round(out.recommendation.maxCreditPct*100)}%)</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm">Ningún nivel de crédito cumple el objetivo actual.</p>
+            )}
+          </div>
+
+          <div className="p-5 bg-white rounded-2xl shadow-sm border">
+            <h3 className="font-medium mb-3">Probabilidad de repago vs crédito</h3>
+            <ProbChart rows={out.table} />
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function InfoRow({ label, children }: { label: string; children: React.ReactNode }){
+  return (
+    <div className="flex items-center justify-between bg-white/60 rounded-xl px-3 py-2 border shadow-sm">
+      <span className="text-slate-500 text-xs">{label}</span>
+      <span className="font-semibold">{children}</span>
+    </div>
+  );
+}
+
+function ProbChart({ rows }: { rows: { pct:number; credit_usd:number; prob_repay:number }[] }){
+  const w=560, h=160, p=18;
+  const xs = rows.map(r=>r.credit_usd);
+  const xmin=0, xmax=Math.max(...xs,1), ymin=0, ymax=1;
+  const X=(x:number)=> p+(x-xmin)/(xmax-xmin||1)*(w-2*p);
+  const Y=(y:number)=> h-p-(y-ymin)/(ymax-ymin||1)*(h-2*p);
+  const pts = rows.map(r=>`${X(r.credit_usd)},${Y(r.prob_repay)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto">
+      <defs>
+        <linearGradient id="g" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="#34d399" stopOpacity=".15"/>
+          <stop offset="100%" stopColor="#0ea5e9" stopOpacity=".05"/>
+        </linearGradient>
+      </defs>
+      <rect x={0} y={0} width={w} height={h} rx={16} fill="url(#g)" />
+      <line x1={p} y1={h-p} x2={w-p} y2={h-p} stroke="#cbd5e1" />
+      <line x1={p} y1={p}   x2={p}   y2={h-p} stroke="#cbd5e1" />
+      <polyline fill="none" stroke="#0ea5e9" strokeWidth={2.5} points={pts} />
+    </svg>
+  );
+}
