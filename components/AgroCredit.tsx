@@ -271,7 +271,7 @@ export default function AgroCredit(){
     <div className="max-w-6xl mx-auto px-6 py-8">
       <header className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl md:text-3xl font-semibold">Agro Credit Optimizer — Demo</h1>
-        <div className="text-xs text-slate-500">Núcleo vs NEA · Monte Carlo</div>
+        <div className="text-xs text-slate-500">Desarrollado por Sembrala (Sembraia SAS)</div>
       </header>
 
       <section className="grid lg:grid-cols-3 gap-4">
